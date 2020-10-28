@@ -30,7 +30,7 @@ private import std.format : format;
 private import std.digest.md : md5Of;
 private import std.conv : to;
 
-private import undead.stream : Stream, WriteException, ReadException;
+private import std.bitmanip;
 
 private import message_codes;
 
@@ -50,8 +50,7 @@ class Message
 
 	void writei (int i)
 		{
-		try {b.write (i);}
-		catch (WriteException e) {log(1, e, " when trying to send an int : ", i);}
+		b.write (i);
 		}
 
 	void writei (long i)
@@ -61,67 +60,40 @@ class Message
 		
 	void writeb (byte o)
 		{
-		try {b.write (o);}
-		catch (WriteException e) {log(1, e, " when trying to send a byte : ", o);}
+		b.write (o);
 		}
 	
 	void writes (string s)
 		{
-		try
-			{
-			log(3, "Sending string '", s, "', length ", s.length);
-			writei (s.length);
-			b.write (s);
-			}
-		catch (WriteException e) {log(1, e, " when trying to send a string : ", s, "(", s.length, ")");}
+		log(3, "Sending string '", s, "', length ", s.length);
+		writei (s.length);
+		b.write (s);
 		}
 
 	int length;
-	Stream s;
+	ubyte[] s;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		this.s = s;
 		}
 
 	int readi ()
 		{ // read an int
-		int i;
-		try {s.read (i);}
-		catch (ReadException e)
-			{
-			log(1, "Message code ", code, ", length ", length, " trying to read an int : ", e);
-			i = 0;
-			}
+		int i = s.read!uint();
 		return i;
 		}
 	
 	byte readb ()
 		{ // read a byte
-		byte b;
-		try {s.read (b);}
-		catch (ReadException e)
-			{
-			log(1, "Message code ", code, ", length ", length, " trying to read a byte : ", e);
-			b = 0;
-			}
+		byte b = s.read!ubyte();
 		return b;
 		}
 	
 	string reads ()
 		{ // read a string
-		int    slen;
-		string str;
-		try
-			{
-			slen = readi ();
-			str = to!string(s.readString (slen));
-			}
-		catch (ReadException e)
-			{
-			log(1, "Message code ", code, ", length ", length, " trying to read a string : ", e);
-			str = "";
-			}
+		int    slen = readi ();
+		string str = to!string(s.read!ubyte());
 		return str;
 		}
 	}
@@ -132,7 +104,7 @@ class ULogin : Message
 	string pass;	// user password
 	int    vers;	// client version (198 for nicotine and museek, 180 for pyslsk)
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -154,7 +126,7 @@ class ULogin : Message
 class USetWaitPort : Message
 	{		// A client is telling us which port it is listening on
 	int port;	// port number
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -173,7 +145,7 @@ class UGetPeerAddress : Message
 	{		// A client is asking for someone's address
 	string user;	// name of the user to get the address of
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -192,7 +164,7 @@ class UUserExists : Message
 	{		// A client wants to know if some user exists ?
 	string user;	// name of the user
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -211,7 +183,7 @@ class UAddUser : Message
 	{		// A client wants to watch someone else
 	string user;	// name of the user to watch
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -230,7 +202,7 @@ class UGetUserStatus : Message
 	{		// A client wants to know the status of someone
 	string user;	// name of the user
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -250,7 +222,7 @@ class USayChatroom : Message
 	string room;	// room to talk in
 	string message;	// what to say
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 		
@@ -271,7 +243,7 @@ class UJoinRoom : Message
 	{		// Client wants to join a room
 	string room;	// room the client wants to join
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -290,7 +262,7 @@ class ULeaveRoom : Message
 	{		// Client wants to leave a room
 	string room;	// room the client wants to leave
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -311,7 +283,7 @@ class UConnectToPeer : Message
 	string user;	// user name
 	string type;	// connection type ("F" if for a file transfers, "P" otherwise)
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -335,7 +307,7 @@ class UMessageUser : Message
 	string user;	// user to send the message to
 	string message; // message content
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -356,7 +328,7 @@ class UMessageAcked : Message
 	{		// Client acknowledges a private message
 	int id;		// message id
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -376,7 +348,7 @@ class UFileSearch : Message
 	int token;	// search token
 	string strng;	// search string
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -397,7 +369,7 @@ class USetStatus : Message
 	{		// Client sets its status
 	int status;	// -1 : Unknown - 0 : Offline - 1 : Away - 2 : Online
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -417,7 +389,7 @@ class USendSpeed : Message
 	string user;	// user name
 	int    speed;   // speed
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -439,7 +411,7 @@ class USharedFoldersFiles : Message
 	int nb_folders;	// number of folders
 	int nb_files;	// number of files
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -460,7 +432,7 @@ class UGetUserStats : Message
 	{		// Client wants the stats of someone
 	string user;	// user name
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -482,7 +454,7 @@ class UUserSearch : Message
 	int    token;	// search token
 	string query;	// search string
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -505,7 +477,7 @@ class UAddThingILike : Message
 	{		// Client likes thing
 	string thing;	// thing (s)he likes
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -524,7 +496,7 @@ class URemoveThingILike : Message
 	{		// Client doesn't like thing anymore
 	string thing;	// the thing
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -543,7 +515,7 @@ class UAddThingIHate : Message
 	{		// Client hates thing
 	string thing;	// thing (s)he likes
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -562,7 +534,7 @@ class URemoveThingIHate : Message
 	{		// Client doesn't hate thing anymore
 	string thing;	// the thing
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -582,7 +554,7 @@ class UAddToPrivileged : Message
 	string user;	// user to give the privileges to
 	int    time;	// privileges credits
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -604,7 +576,7 @@ class UGetItemRecommendations : Message
 			// for a particular item
 	string item;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -624,7 +596,7 @@ class UItemSimilarUsers : Message
 			// likes a particular item
 	string item;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -644,7 +616,7 @@ class USetRoomTicker : Message
 	string room;	// room name
 	string tick;	// ticker content
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -667,7 +639,7 @@ class URoomSearch : Message
 	int    token;	// search token
 	string query;	// search string
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -690,7 +662,7 @@ class UUserPrivileges : Message
         {               // Client wants to know if someone has privileges
         string user;    // user name
 
-        this (Stream s)
+        this (ubyte[] s)
                 {
                 super (s);
         
@@ -709,7 +681,7 @@ class UAdminMessage : Message
 	{		// An admin sends a message
 	string mesg;	// the message
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -729,7 +701,7 @@ class UGivePrivileges : Message
 	string user;	// user to give the privileges to
 	int    time;	// time to give
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -751,7 +723,7 @@ class UCantConnectToPeer : Message
 	int token;	// message token
 	string user;	// user who requested the connection
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -800,7 +772,7 @@ class SLogin : Message
 	string mesg;
 	int    addr;
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -825,7 +797,7 @@ class SGetPeerAddress : Message
 	int    address;
 	int    port;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -848,7 +820,7 @@ class SUserExists : Message
 	string user;
 	byte   exists;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -871,7 +843,7 @@ class SAddUser : Message
 	string user;
 	byte   exists;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -893,7 +865,7 @@ class SGetUserStatus : Message
 	string username;
 	int    status;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -917,7 +889,7 @@ class SSayChatroom : Message
 	string user;
 	string mesg;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -948,7 +920,7 @@ class SRoomList : Message
 	
 	int[string] rooms;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1020,7 +992,7 @@ class SJoinRoom : Message
 	int[string] shared_folders;
 	int[string] slots_full;
 	
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1072,7 +1044,7 @@ class SLeaveRoom : Message
 	
 	string room;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1107,7 +1079,7 @@ class SUserJoinedRoom : Message
 	int    shared_folders;
 	int    slots_full;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1136,7 +1108,7 @@ class SUserLeftRoom : Message
 	string room;
 	string username;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1164,7 +1136,7 @@ class SConnectToPeer : Message
 	int    port;
 	int    token;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1193,7 +1165,7 @@ class SMessageUser : Message
 	string from;
 	string content;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1219,7 +1191,7 @@ class SFileSearch : Message
 	int    token;
 	string text;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1258,7 +1230,7 @@ class SGetUserStats : Message
 	int    shared_files;
 	int    shared_folders;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1287,7 +1259,7 @@ class SGetRecommendations : Message
 	
 	int[string] list;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1319,7 +1291,7 @@ class SGetGlobalRecommendations : Message
 	
 	int[string] list;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1357,7 +1329,7 @@ class SUserSearch : Message
 	int    token;
 	string query;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1378,7 +1350,7 @@ class SRoomAdded : Message
 
 	string name;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1397,7 +1369,7 @@ class SRoomRemoved : Message
 
 	string name;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1416,7 +1388,7 @@ class SAdminMessage : Message
 
 	string message;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1435,7 +1407,7 @@ class SCheckPrivileges : Message
 
 	int time;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1459,7 +1431,7 @@ class SSimilarUsers : Message
 
 	int[string] list;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1482,16 +1454,16 @@ class SGetItemRecommendations : Message
 
 		writes (item);
 		writei (list.length);
-		foreach (string item, int weight ; list)
+		foreach (string recommendation, int weight ; list)
 			{
-			writes (item);
+			writes (recommendation);
 			writei (weight);
 			}
 		}
 
 	int[string] list;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1522,7 +1494,7 @@ class SItemSimilarUsers : Message
 
 	string[] list;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1553,7 +1525,7 @@ class SRoomTicker : Message
 	string room;
 	string[string] tickers;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 		
@@ -1585,7 +1557,7 @@ class SRoomTickerAdd : Message
 	string user;
 	string ticker;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1608,7 +1580,7 @@ class SRoomTickerRemove : Message
 	string room;
 	string user;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1632,7 +1604,7 @@ class SRoomSearch : Message
 	int    token;
 	string query;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1655,7 +1627,7 @@ class SUserPrivileges : Message
 	int    privileges;
 	string username;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1675,7 +1647,7 @@ class SCantConnectToPeer : Message
 
 	int token;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 
@@ -1705,7 +1677,7 @@ class SServerInfo : Message
 
 	string[string] info;
 
-	this (Stream s)
+	this (ubyte[] s)
 		{
 		super (s);
 

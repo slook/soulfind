@@ -38,6 +38,8 @@ private import undead.cstream : EndianStream, MemoryStream, ReadException;
 private import undead.socketstream : SocketStream;
 private import std.socket : Socket, InternetAddress;
 
+private import std.bitmanip;
+
 private import std.system : Endian, endian;
 private import core.stdc.time : time;
 
@@ -518,10 +520,9 @@ class User
 			}
 		}
 	
-	bool proc_message (Stream s)
+	bool proc_message (ubyte[] s)
 		{
-		int code;
-		s.read (code);
+		int code = s.read!uint();
 		if (code != 32 && code < message_name.length) log(3, "Received message ", blue, message_name[code], black, " (code ", blue, code, black ~ ")");
 
 		if (!loggedin && code != Login) return false;
@@ -831,8 +832,8 @@ class User
 			default:
 				log(2, red, "Un-implemented message", black, "from user ", underline,
 					username.length > 0 ? username : to!string(address), black,
-					", code ", red, code, black, " and length ", s.size (), "\n> ");
-				try {log(2, s.toString ());}
+					", code ", red, code, black, " and length ", s.length, "\n> ");
+				try {log(2, to!string(s));}
 				catch (Exception e) {log(2, "");}
 				break;
 			}
