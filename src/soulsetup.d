@@ -47,7 +47,8 @@ string input()
 
 void main_menu()
 {
-	auto menu = new Menu("Soulfind %s configuration".format(VERSION));
+	auto menu = new Menu("Soulsetup for Soulfind %s (compiled %s %s)".format(
+		VERSION, __DATE__, __TIME__));
 	
 	menu.add("0", "Admins",            &admins);
 	menu.add("1", "Listen port",       &listen_port);
@@ -170,50 +171,71 @@ void set_max_users()
 
 void motd()
 {
-	auto menu = new Menu(
-		format("Current message of the day :\n--\n%s\n--\n",
-			sdb.conf_get_str("motd"))
-	);
-	menu.add("1", "Change MOTD", &set_motd);
-	menu.add("q", "Return",      &main_menu);
+	auto menu = new Menu("Message Of The Day");
+
+	menu.add("1", "Change MOTD for users",  &set_user_motd);
+	menu.add("2", "Change MOTD for admins", &set_admin_motd);
+	menu.add("q", "Return",                 &main_menu);
 
 	menu.show();
 }
 
-void set_motd()
+void set_admin_motd()
+{
+	writeln("Current MOTD for admins :\n--\n%s\n--\n".format(
+		sdb.conf_get_str("motd"))
+	);
+	set_motd("motd");  // TODO: add seperate admin/privileged MOTD's
+}
+
+void set_user_motd()
+{
+	writeln("Current MOTD for users :\n--\n%s\n--\n".format(
+		sdb.conf_get_str("motd"))
+	);
+	set_motd("motd");
+}
+
+void set_motd(string config_field)
 {
 	writeln(
 		"You can use the following variables :\n"
-		~ "%version%     : server version(", VERSION, ")\n"
-		~ "%nbusers%     : number of users already connected\n"
-		~ "%username%    : name of the connecting user\n"
-		~ "%userversion% : version of the user's client software\n"
-		~ "New MOTD(end with a dot on a single line) :"
+		~ "\t%privileged%  : number of privileged users\n"
+		~ "\t%registered%  : number of registered users\n"
+		~ "\t%users%       : number of connected users\n"
+		~ "\t%username%    : name of the connecting user\n"
+		~ "\t%version%     : version of the user's client software\n"
+		~ "\t%sname%       : name of the server used for chat\n"
+		~ "\t%sversion%    : version of this server (", VERSION, ")\n"
+		~ "\t%scompiled%   : date when this server was built\n"
+		~ "\t%suptime%     : time elapsed since server was started\n"
+		~ "\t%sinfo%       : all of the server's information\n"
+		~ "\nNew MOTD (end with a dot on a single line) :\n--"
 	);
 
-	string MOTD;
+	string message_of_the_day;
 
 	do {
 		auto line = input.chomp;
 		if (line.strip == ".")
 			break;
-		if (MOTD.length > 0) MOTD ~= "\n";
-		MOTD ~= line;
+		if (message_of_the_day.length > 0)
+			message_of_the_day ~= "\n";
+		message_of_the_day ~= line;
 	}
 	while(true);
 
-	sdb.conf_set_field("motd", MOTD);
+	sdb.conf_set_field(config_field, message_of_the_day);
 	motd();
 }
 
 void info()
 {
-	auto menu = new Menu("Misc. information :");
+	auto menu = new Menu("Soulfind %s".format(VERSION));
 
-	menu.info = "Soulsetup for Soulfind %s, compiled on %s\n".format(
-		VERSION, __DATE__
-	);
-	menu.info ~= "%d registered users".format(sdb.nb_users());
+	menu.info = "%d registered users\n".format(sdb.count_users());
+	menu.info ~= "%d privileged users\n".format(sdb.count_users("privileges"));
+	menu.info ~= "%d banned users\n".format(sdb.count_users("banned"));
 	menu.add("q", "Return", &main_menu);
 
 	menu.show();
@@ -221,10 +243,10 @@ void info()
 
 void banned_users()
 {
-	auto menu = new Menu("Banned users");
+	auto menu = new Menu("%d banned users".format(sdb.count_users("banned")));
 	
-	menu.add("1", "Ban an user",       &ban_user);
-	menu.add("2", "Unban an user",     &unban_user);
+	menu.add("1", "Ban user",          &ban_user);
+	menu.add("2", "Unban user",        &unban_user);
 	menu.add("3", "List banned users", &list_banned);
 	menu.add("q", "Return",            &main_menu);
 
@@ -247,16 +269,10 @@ void unban_user()
 
 void list_banned()
 {
-	auto users = sdb.get_banned_usernames();
+	auto users = sdb.get_usernames("banned");
 
-	if (!users) {
-		writeln("No user is banned.");
-		banned_users();
-		return;
-	}
-
-	writeln("\nBanned users :");
-	foreach (user ; users) writeln(format("- %s", user));
+	writeln("%d banned users...".format(users.length));
+	foreach (user ; users) writeln(format("\t%s", user));
 
 	banned_users();
 }

@@ -327,7 +327,8 @@ class Server
 					"Available commands :\n\n"
 				  ~ "nbusers\n\tNumber of users connected\n\n"
 				  ~ "users\n\tInfo about each connected user\n\n"
-				  ~ "info <user>\n\tInfo about user <user>\n\n"
+				  ~ "info [user]\n"
+				  ~ "\tInfo about " ~ server_user ~ " or [user]\n\n"
 				  ~ "killall\n\tDisconnect all users\n\n"
 				  ~ "kill <user>\n\tDisconnect <user>\n\n"
 				  ~ "[un]ban <user>\n\tUnban or ban and disconnect"
@@ -385,12 +386,10 @@ class Server
 
 			case "info":
 				if (command.length < 2) {
-					admin_pm(admin, "Syntax is : info <user>");
-					break;
+					command ~= server_user;
 				}
 				auto username = join(command[1 .. $], " ");
-				auto user_info = show_user(username);
-				admin_pm(admin, user_info);
+				admin_pm(admin, show_user(username));
 				break;
 
 			case "killall":
@@ -524,6 +523,26 @@ class Server
 		}
 	}
 
+	private string show_server_info()
+	{
+		return format(
+			"uptime %s"
+			~ "\n%d connected users"
+			~ "\n%d registered users"
+			~ "\n%d privileged users"
+			~ "\n%d banned users"
+			~ "\n%d chat rooms"
+			~ "\nSoulfind %s (compiled %s %s)",
+				h_uptime,
+				user_list.length,
+				db.count_users(),
+				db.count_users("privileges"),
+				db.count_users("banned"),
+				Room.rooms.length,
+				VERSION, __DATE__, __TIME__
+		);
+	}
+
 	private string show_users()
 	{
 		string s;
@@ -533,6 +552,9 @@ class Server
 
 	private string show_user(string username)
 	{
+		if (username == server_user)
+			return show_server_info();
+
 		auto user = get_user(username);
 		if (!user)
 			return "";
@@ -589,21 +611,31 @@ class Server
 
 	string get_motd(string username)
 	{
+		if (is_admin(username)) writeln(username, " is an admin.");
+
+		motd = db.conf_get_str("motd");  // TODO: add seperate admin MOTD
 		auto user = get_user(username);
 		auto client_version = "%d.%d".format(
 			user.major_version, user.minor_version);
 
 		string ret;
-		ret = replace(motd, "%version%", VERSION);
-		ret = replace(ret, "%nbusers%", nb_users.to!string);
+		ret = replace(motd, "%sversion%", VERSION);
+		ret = replace(ret, "%scompiled%", __DATE__);
+		ret = replace(ret, "%suptime%", h_uptime);
+		ret = replace(ret, "%sname%", server_user);
+		ret = replace(ret, "%sinfo%", show_server_info);
+		ret = replace(
+			ret, "%privileged%", db.count_users("privileges").to!string
+		);
+		ret = replace(ret, "%registered%", db.count_users().to!string);
+		ret = replace(ret, "%users%", nb_users.to!string);
 		ret = replace(ret, "%username%", username);
-		ret = replace(ret, "%userversion%", client_version);
+		ret = replace(ret, "%version%", client_version);
 		return ret;
 	}
 
 	private void config(bool reload = false)
 	{
-		motd = db.conf_get_str("motd");
 		if (!reload) {
 			port = cast(ushort)db.conf_get_int("port");
 			max_users = db.conf_get_int("max_users");
@@ -647,7 +679,7 @@ class Server
 			return false;
 		}
 
-		const string[] forbidden_names = [server_user, ""];
+		const string[] forbidden_names = [server_user, "", "0", "1"];
 		const string[] forbidden_words = ["  ", "sqlite3_"];
 
 		foreach (name ; forbidden_names) if (name == text) {

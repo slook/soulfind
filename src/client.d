@@ -875,8 +875,6 @@ class User
 			username, password, speed, upload_number, shared_files,
 			shared_folders, privileges
 		);
-
-		if (server.is_admin(username)) writeln(username, " is an admin.");
 		server.add_user(this);
 
 		auto motd = server.get_motd(username);
