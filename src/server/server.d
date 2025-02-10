@@ -6,7 +6,7 @@
 module soulfind.server.server;
 @safe:
 
-import core.time : Duration, minutes, MonoTime, seconds;
+import core.time : days, Duration, minutes, MonoTime, seconds;
 import soulfind.db : Sdb;
 import soulfind.defines : blue, bold, default_max_users, default_port, norm,
                           red, server_username, VERSION;
@@ -446,9 +446,9 @@ class Server
                     break;
                 }
 
-                uint days;
+                Duration duration;
                 try {
-                    days = command[1].to!uint;
+                    duration = days(command[1].to!uint);
                 }
                 catch (ConvException e) {
                     admin_pm(admin, "Badly formatted number.");
@@ -464,7 +464,7 @@ class Server
                     break;
                 }
 
-                user.add_privileges(days * 3600 * 24);
+                user.assign_privileges(duration);
                 break;
 
             case "users":

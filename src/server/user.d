@@ -6,7 +6,7 @@
 module soulfind.server.user;
 @safe:
 
-import core.time : seconds;
+import core.time : days, Duration, seconds;
 import soulfind.defines : blue, max_msg_size, norm, red, server_username;
 import soulfind.server.messages;
 import soulfind.server.pm : PM;
@@ -14,7 +14,7 @@ import soulfind.server.room : Room;
 import soulfind.server.server : Server;
 import std.array : join;
 import std.bitmanip : Endian, nativeToLittleEndian, peek, read;
-import std.datetime : Clock, SysTime;
+import std.datetime : Clock, ClockType, SysTime;
 import std.format : format;
 import std.socket : InternetAddress, Socket;
 import std.stdio : writefln;
@@ -59,7 +59,7 @@ class User
         this.server        = serv;
         this.sock          = sock;
         this.ip_address    = ip_address;
-        this.connected_at  = Clock.currTime;
+        this.connected_at  = Clock.currTime!(ClockType.second);
     }
 
 
@@ -124,24 +124,10 @@ class User
 
     // Privileges
 
-    void add_privileges(uint seconds)
+    void assign_privileges(Duration duration)
     {
         if (privileges <= 0) priv_expiration = Clock.currTime.toUnixTime;
-        priv_expiration += seconds;
-        server.db.user_update_field(username, "privileges", priv_expiration);
-
-        scope msg = new SCheckPrivileges(privileges);
-        send_message(msg);
-
-        debug (user) writefln!(
-            "Given %d secs of privileges to user %s who now has %d secs")(
-            seconds, blue ~ username ~ norm, privileges
-        );
-    }
-
-    void remove_privileges(uint seconds)
-    {
-        priv_expiration -= seconds;
+        priv_expiration += duration.total!"seconds";  // give(+) or take(-)
         if (privileges <= 0) priv_expiration = Clock.currTime.toUnixTime;
         server.db.user_update_field(username, "privileges", priv_expiration);
 
@@ -149,12 +135,12 @@ class User
         send_message(msg);
 
         debug (user) writefln!(
-            "Taken %d secs of privileges from user %s who now has %d secs")(
-            seconds, blue ~ username ~ norm, privileges
+            "Assigned %s of privileges so user %s now has %d secs")(
+            duration.toString, blue ~ username ~ norm, privileges
         );
     }
 
-    long privileges()
+    private long privileges()
     {
         long privileges = priv_expiration - Clock.currTime.toUnixTime;
         if (privileges <= 0) privileges = 0;
@@ -166,12 +152,12 @@ class User
         return privileges > 0 ? privileges.seconds.toString : "none";
     }
 
-    bool privileged()
+    private bool privileged()
     {
         return privileges > 0;
     }
 
-    bool supporter()
+    private bool supporter()
     {    // user has had privileges at some point
         return priv_expiration > 0;
     }
@@ -898,14 +884,18 @@ class User
             case GivePrivileges:
                 scope msg = new UGivePrivileges(msg_buf, username);
                 auto user = server.get_user(msg.username);
-                const admin = server.db.is_admin(msg.username);
                 if (!user)
                     break;
-                if (msg.time > privileges && !admin)
-                    break;
 
-                user.add_privileges(msg.time * 3600 * 24);
-                if (!admin) remove_privileges(msg.time * 3600 * 24);
+                Duration duration = days(msg.days);
+
+                if (!server.db.is_admin(msg.username)) {
+                    if (duration > seconds(privileges))
+                        break;
+
+                    assign_privileges(-duration);  // take
+                }
+                user.assign_privileges(duration);  // give
                 break;
 
             case ChangePassword:
