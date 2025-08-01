@@ -6,20 +6,21 @@
 module soulfind.server.user;
 @safe:
 
-import core.time : days, Duration, MonoTime, seconds;
+import core.time : Duration, MonoTime, seconds;
 import soulfind.db : SdbUserStats;
-import soulfind.defines : blue, bold, default_max_users, login_timeout,
-                          max_chat_message_length, max_interest_length,
-                          max_msg_size, max_room_name_length,
-                          max_username_length, norm, red, server_username,
-                          VERSION;
+import soulfind.defines : blue, bold, default_max_users, log_msg, log_user,
+                          login_timeout, max_chat_message_length,
+                          max_interest_length, max_msg_size,
+                          max_room_name_length, max_username_length, norm, red,
+                          server_username, speed_weight, VERSION,
+                          wish_interval, wish_interval_privileged;
 import soulfind.server.messages;
 import soulfind.server.pm : PM;
 import soulfind.server.room : Room;
 import soulfind.server.server : Server;
-import std.algorithm : canFind, clamp;
+import std.algorithm : canFind;
 import std.array : Appender, array;
-import std.ascii : isASCII, isPunctuation;
+import std.ascii : isPrintable;
 import std.bitmanip : Endian, nativeToLittleEndian, peek, read;
 import std.conv : ConvException, to;
 import std.datetime : Clock, SysTime;
@@ -35,19 +36,17 @@ class User
     string                  username;
     Socket                  sock;
     InternetAddress         address;
+    bool                    removed;
 
     uint                    status;
     string                  client_version;
-    SysTime                 connected_at;
-    string                  login_rejection;
+    LoginRejection          login_rejection;
     SysTime                 privileged_until;
     bool                    supporter;
 
-    uint                    speed;                // in B/s
-    uint                    upload_number;
+    uint                    upload_speed;  // in B/s
     uint                    shared_files;
     uint                    shared_folders;
-    string                  country_code;
 
     private Server          server;
     private MonoTime        connected_monotime;
@@ -69,7 +68,6 @@ class User
         this.server              = serv;
         this.sock                = sock;
         this.address             = address;
-        this.connected_at        = Clock.currTime;
         this.connected_monotime  = MonoTime.currTime;
     }
 
@@ -97,69 +95,69 @@ class User
         return (MonoTime.currTime - connected_monotime) > login_timeout;
     }
 
-    private bool check_name(string text, uint max_length)
+    private string check_username(string username)
     {
-        if (text.length == 0 || text.length > max_length) {
-            return false;
-        }
-        foreach (c ; text) if (!c.isASCII) {
-            // non-ASCII control chars, etc
-            return false;
-        }
-        if (text.length == 1 && isPunctuation(text[0])) {
-            // only character is a symbol
-            return false;
-        }
-        if (text.strip != text) {
-            // leading/trailing whitespace
-            return false;
-        }
+        if (username.length == 0)
+            return "Nick empty.";
+
+        if (username.length > max_username_length)
+            return "Nick too long.";
+
+        if (username.strip != username)
+            return "No leading and trailing spaces allowed in nick.";
+
+        foreach (c ; username) if (!c.isPrintable)
+            // Only printable ASCII characters allowed
+            return "Invalid characters in nick.";
 
         static immutable forbidden_names = [server_username];
-        static immutable forbidden_words = ["  "];
 
-        foreach (name ; forbidden_names) if (name == text) {
-            return false;
-        }
-        foreach (word ; forbidden_words) if (text.canFind(word)) {
-            return false;
-        }
-        return true;
+        foreach (name ; forbidden_names) if (name == username)
+            // Official server returns empty detail
+            return "";
+
+        return null;
     }
 
-    private string encode_password(string password)
+    private LoginRejection verify_login(string username, string password)
     {
-        return digest!MD5(password).toHexString!(LetterCase.lower).to!string;
-    }
-
-    private string verify_login(string username, string password)
-    {
+        auto login_rejection = LoginRejection();
         ulong max_users;
         try
             max_users = server.db.get_config_value("max_users").to!uint;
         catch (ConvException)
             max_users = default_max_users;
 
-        if (server.users.length >= max_users)
-            return "SVRFULL";
+        if (server.users.length >= max_users) {
+            login_rejection.reason = LoginRejectionReason.server_full;
+            return login_rejection;
+        }
 
-        if (!check_name(username, max_username_length))
-            return "INVALIDUSERNAME";
+        const invalid_name_reason = check_username(username);
+        if (invalid_name_reason) {
+            login_rejection.reason = LoginRejectionReason.username;
+            login_rejection.detail = invalid_name_reason;
+            return login_rejection;
+        }
 
         if (!server.db.user_exists(username)) {
-            server.db.add_user(username, encode_password(password));
-            return null;
+            if (password.length == 0 || server.db.is_admin(username))
+                // For security reasons, non-existent admins cannot register
+                // through the client
+                login_rejection.reason = LoginRejectionReason.password;
+            else
+                server.db.add_user(username, password);
+            return login_rejection;
         }
-        debug (user) writefln!("User %s is registered")(
+        if (log_user) writefln!("User %s is registered")(
             blue ~ username ~ norm
         );
 
-        if (!secureEqual(
-                server.db.get_user_password(username),
-                encode_password(password)))
-            return "INVALIDPASS";
-
-        return null;
+        if (!server.db.user_verify_password(username, password)) {
+            login_rejection.reason = LoginRejectionReason.password;
+            return login_rejection;
+        }
+        return login_rejection;
     }
 
 
@@ -186,24 +184,22 @@ class User
 
     // Stats
 
-    private void calc_speed(uint new_speed)
+    private void update_upload_speed(uint new_speed)
     {
-        if (upload_number == 0) {
-            upload_number = 1;
-            speed = new_speed;
-        }
-        else {
-            speed = (speed * upload_number + new_speed) / (upload_number + 1);
-            upload_number++;
-        }
+        if (upload_speed > 0)
+            upload_speed = (
+                (upload_speed * speed_weight + new_speed) / (speed_weight + 1)
+            );
+        else
+            upload_speed = new_speed;
 
         scope msg = new SGetUserStats(
-            username, speed, upload_number, shared_files, shared_folders
+            username, upload_speed, shared_files, shared_folders
         );
         send_to_watching(msg);
 
         auto stats = SdbUserStats();
-        stats.speed = speed;
+        stats.upload_speed = upload_speed;
         stats.updating_speed = true;
 
         server.db.user_update_stats(username, stats);
@@ -233,11 +229,7 @@ class User
         if (!notify_user)
             return;
 
-        scope msg = new SCheckPrivileges(
-            cast(uint) privileges
-                .total!"seconds"
-                .clamp(0, uint.max)
-        );
+        scope msg = new SCheckPrivileges(privileges);
         send_message(msg);
     }
 
@@ -285,9 +277,14 @@ class User
         return false;
     }
 
+    ulong num_watched_users()
+    {
+        return watched_users.length;
+    }
+
     private void send_to_watching(scope SMessage msg)
     {
-        debug (msg) writefln!(
+        if (log_msg) writefln!(
             "Transmit=> %s (code %d) to users watching user %s...")(
             blue ~ msg.name ~ norm, msg.code, blue ~ username ~ norm
         );
@@ -300,7 +297,7 @@ class User
 
     private void add_liked_item(string item)
     {
-        if (item.length > max_interest_length)
+        if (item.length == 0 || item.length > max_interest_length)
             return;
 
         if (likes(item))
@@ -316,7 +313,7 @@ class User
 
     private void add_hated_item(string item)
     {
-        if (item.length > max_interest_length)
+        if (item.length == 0 || item.length > max_interest_length)
             return;
 
         if (hates(item))
@@ -338,6 +335,16 @@ class User
     private bool hates(string item)
     {
         return item in hated_items ? true : false;
+    }
+
+    string[] liked_item_names()
+    {
+        return liked_items.byKey.array;
+    }
+
+    string[] hated_item_names()
+    {
+        return hated_items.byKey.array;
     }
 
     private uint[string] global_recommendations()
@@ -420,57 +427,13 @@ class User
     }
 
 
-    // Private Messages
-
-    void send_pm(const PM pm, bool new_message)
-    {
-        scope msg = new SMessageUser(
-            pm.id, cast(uint) pm.time.toUnixTime.clamp(0, uint.max),
-            pm.from_username, pm.message, new_message
-        );
-        send_message(msg);
-    }
-
-
     // Rooms
 
     void join_room(string name)
     {
-        string fail_message;
-        if (name.length == 0)
-            fail_message = "Could not create room. Reason: Room name empty.";
-        else if (name.length > max_room_name_length)
-            fail_message = format!(
-                "Could not create room. Reason: Room name %s longer than %d "
-              ~ "characters.")(
-                name, max_room_name_length
-            );
-        else if (name.strip != name)
-            fail_message = format!(
-                "Could not create room. Reason: Room name %s contains leading "
-              ~ "or trailing spaces.")(
-                name
-            );
-        else if (name.canFind("  "))
-            fail_message = format!(
-                "Could not create room. Reason: Room name %s contains "
-              ~ "multiple following spaces.")(
-                name
-            );
-        else
-            foreach (c ; name) {
-                if (!c.isASCII) {
-                    fail_message = format!(
-                        "Could not create room. Reason: Room name %s contains "
-                      ~ "invalid characters.")(
-                        name
-                    );
-                    break;
-                }
-            }
-
+        string fail_message = check_room_name(name);
         if (fail_message) {
-            server.server_pm(this, fail_message);
+            server.server_pm(username, fail_message);
             return;
         }
 
@@ -507,6 +470,43 @@ class User
         return joined_rooms.byKey.array;
     }
 
+    private string check_room_name(string room_name)
+    {
+        if (room_name.length == 0)
+            return "Could not create room. Reason: Room name empty.";
+
+        if (room_name.length > max_room_name_length)
+            return format!(
+                "Could not create room. Reason: Room name %s longer than %d "
+              ~ "characters.")(
+                room_name, max_room_name_length
+            );
+
+        if (room_name.strip != room_name)
+            return format!(
+                "Could not create room. Reason: Room name %s contains leading "
+              ~ "or trailing spaces.")(
+                room_name
+            );
+
+        if (room_name.canFind("  "))
+            return format!(
+                "Could not create room. Reason: Room name %s contains "
+              ~ "multiple following spaces.")(
+                room_name
+            );
+
+        foreach (c ; room_name) if (!c.isPrintable)
+            // Only printable ASCII characters allowed
+            return format!(
+                "Could not create room. Reason: Room name %s contains "
+              ~ "invalid characters.")(
+                room_name
+            );
+
+        return null;
+    }
+
 
     // Messages
 
@@ -528,17 +528,28 @@ class User
     void send_message(scope SMessage msg)
     {
         const msg_buf = msg.bytes;
-        const msg_len = cast(uint) msg_buf.length;
+        const msg_len = msg_buf.length;
         const offset = out_buf.length;
 
-        out_buf.length += (uint.sizeof + msg_len);
-        out_buf[offset .. offset + uint.sizeof] = msg_len.nativeToLittleEndian;
-        out_buf[offset + uint.sizeof .. $] = msg_buf;
-
-        debug (msg) writefln!(
+        if (log_msg) writefln!(
             "Sending -> %s (code %d) of %d bytes -> to user %s")(
             blue ~ msg.name ~ norm, msg.code, msg_len, blue ~ username ~ norm
         );
+
+        if (msg_len > uint.max) {
+            writefln!(
+                "Message %s (code %d) of %d bytes to user %s is too large, "
+              ~ "not sending")(
+                blue ~ msg.name ~ norm, msg.code, msg_len,
+                blue ~ username ~ norm
+            );
+            return;
+        }
+
+        out_buf.length += (uint.sizeof + msg_len);
+        out_buf[offset .. offset + uint.sizeof] = (cast(uint) msg_len)
+            .nativeToLittleEndian;
+        out_buf[offset + uint.sizeof .. $] = msg_buf;
     }
 
     bool recv_buffer()
@@ -549,25 +560,27 @@ class User
             return false;
 
         in_buf ~= receive_buf[0 .. receive_len];
-
-        while (recv_message()) {
-            // disconnect the user if message is incorrect/bogus
-            if (in_msg_size < 0 || in_msg_size > max_msg_size)
+        do {
+            if (in_msg_size == -1) {
+                if (in_buf.length < uint.sizeof)
+                    break;
+                in_msg_size = in_buf.read!(uint, Endian.littleEndian);
+            }
+            if (in_msg_size < 0 || in_msg_size > max_msg_size) {
+                if (log_msg) writefln!(
+                    "Received unexpected message size %d from user %s, "
+                  ~ "disconnecting them")(
+                    in_msg_size, blue ~ username ~ norm
+                );
                 return false;
+            }
+            if (in_buf.length < in_msg_size)
+                break;
             proc_message();
         }
+        while (true);
 
         return true;
-    }
-
-    private bool recv_message()
-    {
-        if (in_msg_size == -1) {
-            if (in_buf.length < uint.sizeof)
-                return false;
-            in_msg_size = in_buf.read!(uint, Endian.littleEndian);
-        }
-        return in_buf.length >= in_msg_size;
     }
 
     private void proc_message()
@@ -601,7 +614,7 @@ class User
                 login_rejection = verify_login(username, msg.password);
                 server.db.unban_user(username);
 
-                if (login_rejection) {
+                if (login_rejection.reason) {
                     scope response_msg = new SLogin(false, login_rejection);
                     send_message(response_msg);
                     break;
@@ -625,8 +638,7 @@ class User
                     msg.major_version, msg.minor_version);
 
                 const user_stats = server.db.user_stats(username);
-                speed = user_stats.speed;
-                upload_number = user_stats.upload_number;
+                upload_speed = user_stats.upload_speed;
                 shared_files = user_stats.shared_files;
                 shared_folders = user_stats.shared_folders;
 
@@ -634,32 +646,41 @@ class User
                 server.add_user(this);
                 watch(username);
 
+                // Empty list of users for privacy reasons. Clients can use
+                // other server messages to know if a user is privileged.
+                string[] privileged_users;
+                const md5_hash = digest!MD5(msg.password)
+                    .toHexString!(LetterCase.lower)
+                    .to!string;
                 scope response_msg = new SLogin(
-                    true, motd, address.addr, encode_password(msg.password),
+                    true, login_rejection, motd, address.addr, md5_hash,
                     supporter
                 );
                 scope room_list_msg = new SRoomList(server.room_stats);
                 scope wish_interval_msg = new SWishlistInterval(
-                    privileged ? 120 : 720  // in seconds
+                    privileged ? wish_interval_privileged : wish_interval
+                );
+                scope privileged_users_msg = new SPrivilegedUsers(
+                    privileged_users
                 );
                 send_message(response_msg);
                 send_message(room_list_msg);
                 send_message(wish_interval_msg);
+                send_message(privileged_users_msg);
 
                 update_status(Status.online);
-
-                foreach (pm ; server.user_pms(username)) {
-                    const new_message = false;
-                    debug (user) writefln!(
-                        "Sending offline PM (id %d) from %s to %s")(
-                        pm.id, pm.from_username, blue ~ username ~ norm
-                    );
-                    send_pm(pm, new_message);
-                }
+                server.send_queued_pms(username);
                 break;
 
             case SetWaitPort:
                 scope msg = new USetWaitPort(msg_buf, username);
+
+                if (address.port != InternetAddress.PORT_ANY)
+                    // If port was already set, reject attempts to change it,
+                    // since they are not compatible with many clients that
+                    // cache user addresses.
+                    break;
+
                 address = new InternetAddress(
                     address.addr, cast(ushort) msg.port
                 );
@@ -694,29 +715,21 @@ class User
 
                 bool user_exists;
                 uint user_status = Status.offline;
-                uint user_speed, user_upload_number;
+                uint user_upload_speed;
                 uint user_shared_files, user_shared_folders;
-                string user_country_code;
 
-                if (msg.username == server_username) {
-                    user_exists = true;
-                    user_status = Status.online;
-                }
-                else if (user)
+                if (user)
                 {
                     user_exists = true;
                     user_status = user.status;
-                    user_speed = user.speed;
-                    user_upload_number = user.upload_number;
+                    user_upload_speed = user.upload_speed;
                     user_shared_files = user.shared_files;
                     user_shared_folders = user.shared_folders;
-                    user_country_code = user.country_code;
                 }
-                else {
+                else if (msg.username != server_username) {
                     const user_stats = server.db.user_stats(msg.username);
                     user_exists = user_stats.exists;
-                    user_speed = user_stats.speed;
-                    user_upload_number = user_stats.upload_number;
+                    user_upload_speed = user_stats.upload_speed;
                     user_shared_files = user_stats.shared_files;
                     user_shared_folders = user_stats.shared_folders;
                 }
@@ -724,9 +737,8 @@ class User
                 watch(msg.username);
 
                 scope response_msg = new SWatchUser(
-                    msg.username, user_exists, user_status, user_speed,
-                    user_upload_number, user_shared_files, user_shared_folders,
-                    user_country_code
+                    msg.username, user_exists, user_status, user_upload_speed,
+                    user_shared_files, user_shared_folders
                 );
                 send_message(response_msg);
                 break;
@@ -742,30 +754,24 @@ class User
                 uint user_status = Status.offline;
                 bool user_privileged;
 
-                if (msg.username == server_username) {
-                    debug (user) writefln!(
-                        "Telling user %s that host %s is online")(
-                        blue ~ username ~ norm, blue ~ server_username ~ norm
-                    );
-                    user_status = Status.online;
-                }
-                else if (user) {
-                    debug (user) writefln!(
+                if (user) {
+                    if (log_user) writefln!(
                         "Telling user %s that user %s is online")(
                         blue ~ username ~ norm, blue ~ msg.username ~ norm
                     );
                     user_status = user.status;
                     user_privileged = user.privileged;
                 }
-                else if (server.db.user_exists(msg.username)) {
-                    debug (user) writefln!(
+                else if (msg.username != server_username
+                         && server.db.user_exists(msg.username)) {
+                    if (log_user) writefln!(
                         "Telling user %s that user %s is offline")(
                         blue ~ username ~ norm, red ~ msg.username ~ norm
                     );
                     user_privileged = server.db.user_privileged(msg.username);
                 }
                 else {
-                    debug (user) writefln!(
+                    if (log_user) writefln!(
                         "Telling user %s that non-existent user %s is "
                       ~ "offline")(
                         blue ~ username ~ norm, red ~ msg.username ~ norm
@@ -808,7 +814,7 @@ class User
                 if (!user)
                     break;
 
-                debug (user) writefln!(
+                if (log_user) writefln!(
                     "User %s @ %s connecting indirectly to peer %s @ %s")(
                     blue ~ username ~ norm, bold ~ address.toString ~ norm,
                     blue ~ msg.username ~ norm,
@@ -833,19 +839,18 @@ class User
                     if (!address.port)
                         break;
 
-                    server.admin_message(this, msg.message);
+                    server.admin_message(username, msg.message);
                 }
                 else if (user) {
-                    // user is connected
+                    // User is connected
                     const pm = server.add_pm(
                         msg.message, username, msg.username
                     );
                     const new_message = true;
-
-                    user.send_pm(pm, new_message);
+                    server.send_pm(pm, new_message);
                 }
                 else if (server.db.user_exists(msg.username)) {
-                    // user exists but not connected
+                    // User exists but not connected
                     server.add_pm(msg.message, username, msg.username);
                 }
                 break;
@@ -874,8 +879,7 @@ class User
                 update_shared_stats(msg.shared_files, msg.shared_folders);
 
                 scope response_msg = new SGetUserStats(
-                    username, speed, upload_number, shared_files,
-                    shared_folders
+                    username, upload_speed, shared_files, shared_folders
                 );
                 send_to_watching(response_msg);
                 break;
@@ -884,26 +888,24 @@ class User
                 scope msg = new UGetUserStats(msg_buf, username);
                 auto user = server.get_user(msg.username);
 
-                uint user_speed, user_upload_number;
+                uint user_upload_speed;
                 uint user_shared_files, user_shared_folders;
 
                 if (user) {
-                    user_speed = user.speed;
-                    user_upload_number = user.upload_number;
+                    user_upload_speed = user.upload_speed;
                     user_shared_files = user.shared_files;
                     user_shared_folders = user.shared_folders;
                 }
                 else {
                     const user_stats = server.db.user_stats(msg.username);
-                    user_speed = user_stats.speed;
-                    user_upload_number = user_stats.upload_number;
+                    user_upload_speed = user_stats.upload_speed;
                     user_shared_files = user_stats.shared_files;
                     user_shared_folders = user_stats.shared_folders;
                 }
 
                 scope response_msg = new SGetUserStats(
-                    msg.username, user_speed, user_upload_number,
-                    user_shared_files, user_shared_folders
+                    msg.username, user_upload_speed, user_shared_files,
+                    user_shared_folders
                 );
                 send_message(response_msg);
                 break;
@@ -913,6 +915,17 @@ class User
                 server.search_user_files(
                     msg.token, msg.query, username, msg.username
                 );
+                break;
+
+            case SimilarRecommendations:
+                // No longer used, send empty response
+                scope msg = new USimilarRecommendations(msg_buf, username);
+                string[] recommendations;
+
+                scope response_msg = new SSimilarRecommendations(
+                    msg.recommendation, recommendations
+                );
+                send_message(response_msg);
                 break;
 
             case AddThingILike:
@@ -958,11 +971,16 @@ class User
             case UserInterests:
                 scope msg = new UUserInterests(msg_buf, username);
                 auto user = server.get_user(msg.username);
-                if (!user)
-                    break;
+                string[string] user_liked_items;
+                string[string] user_hated_items;
+
+                if (user) {
+                    user_liked_items = user.liked_items;
+                    user_hated_items = user.hated_items;
+                }
 
                 scope response_msg = new SUserInterests(
-                    user.username, user.liked_items, user.hated_items
+                    msg.username, user_liked_items, user_hated_items
                 );
                 send_message(response_msg);
                 break;
@@ -1014,17 +1032,16 @@ class User
 
             case SendUploadSpeed:
                 scope msg = new USendUploadSpeed(msg_buf, username);
-                calc_speed(msg.speed);
+                update_upload_speed(msg.speed);
                 break;
 
             case UserPrivileged:
                 scope msg = new UUserPrivileged(msg_buf, username);
                 auto user = server.get_user(msg.username);
-                if (!user)
-                    break;
+                const privileged = user ? user.privileged : false;
 
                 scope response_msg = new SUserPrivileged(
-                    user.username, user.privileged
+                    msg.username, privileged
                 );
                 send_message(response_msg);
                 break;
@@ -1032,30 +1049,27 @@ class User
             case GivePrivileges:
                 scope msg = new UGivePrivileges(msg_buf, username);
                 auto user = server.get_user(msg.username);
-                const admin = server.db.is_admin(msg.username);
-                const duration = msg.days.days;
+                const duration = msg.duration;
 
                 if (!user)
                     break;
 
-                if (duration > privileges && !admin)
+                if (duration > privileges)
                     break;
 
                 server.db.add_user_privileges(msg.username, duration);
                 user.refresh_privileges();
 
-                if (!admin) {
-                    server.db.remove_user_privileges(username, duration);
-                    refresh_privileges();
-                }
+                server.db.remove_user_privileges(username, duration);
+                refresh_privileges();
                 break;
 
             case ChangePassword:
                 scope msg = new UChangePassword(msg_buf, username);
+                if (!msg.password)
+                    break;
 
-                server.db.set_user_password(
-                    username, encode_password(msg.password)
-                );
+                server.db.user_update_password(username, msg.password);
 
                 scope response_msg = new SChangePassword(msg.password);
                 send_message(response_msg);
@@ -1063,20 +1077,20 @@ class User
 
             case MessageUsers:
                 scope msg = new UMessageUsers(msg_buf, username);
-                bool new_message = true;
+                const new_message = true;
 
                 if (msg.message.length > max_chat_message_length)
                     break;
 
                 foreach (target_username ; msg.usernames) {
-                    auto user = server.get_user(target_username);
+                    const user = server.get_user(target_username);
                     if (!user)
                         continue;
 
                     const pm = server.add_pm(
                         msg.message, username, target_username
                     );
-                    user.send_pm(pm, new_message);
+                    server.send_pm(pm, new_message);
                 }
                 break;
 
@@ -1090,6 +1104,17 @@ class User
                 server.global_room.remove_user(username);
                 break;
 
+            case RelatedSearch:
+                // No longer used, send empty response
+                scope msg = new URelatedSearch(msg_buf, username);
+                uint[string] terms;
+
+                scope response_msg = new SRelatedSearch(
+                    msg.query, terms
+                );
+                send_message(response_msg);
+                break;
+
             case CantConnectToPeer:
                 scope msg = new UCantConnectToPeer(msg_buf, username);
                 auto user = server.get_user(msg.username);
@@ -1101,7 +1126,7 @@ class User
                 break;
 
             default:
-                debug (msg) writefln!(
+                if (log_msg) writefln!(
                     "Unimplemented message code %s%d%s from user %s with "
                   ~ "length %d\n%s")(
                     red, code, norm, blue ~ username ~ norm, msg_buf.length,

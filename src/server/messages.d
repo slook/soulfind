@@ -6,24 +6,42 @@
 module soulfind.server.messages;
 @safe:
 
-import soulfind.defines : blue, norm;
+import core.time : days, Duration;
+import soulfind.defines : blue, log_msg, norm;
 import soulfind.server.room : Ticker;
 import soulfind.server.user : User;
-import std.algorithm : sort;
+import std.algorithm : clamp;
 import std.array : Appender, array;
 import std.bitmanip : Endian, nativeToLittleEndian, peek;
 import std.conv : to;
+import std.datetime : SysTime;
 import std.encoding : isValid;
 import std.stdio : writefln;
 import std.string : representation;
 
 // Constants
 
+const enum LoginRejectionReason
+{
+    username     = "INVALIDUSERNAME",
+    password     = "INVALIDPASS",
+    server_full  = "SRVFULL"
+}
+
 const enum Status
 {
     offline  = 0,
     away     = 1,
     online   = 2
+}
+
+
+// Structs
+
+struct LoginRejection
+{
+    string  reason;
+    string  detail;
 }
 
 
@@ -50,6 +68,7 @@ const SharedFoldersFiles     = 35;
 const GetUserStats           = 36;
 const Relogged               = 41;
 const UserSearch             = 42;
+const SimilarRecommendations = 50;
 const AddThingILike          = 51;
 const RemoveThingILike       = 52;
 const GetRecommendations     = 54;
@@ -57,6 +76,7 @@ const GlobalRecommendations  = 56;
 const UserInterests          = 57;
 const RoomList               = 64;
 const AdminMessage           = 66;
+const PrivilegedUsers        = 69;
 const CheckPrivileges        = 92;
 const WishlistSearch         = 103;
 const WishlistInterval       = 104;
@@ -78,6 +98,7 @@ const MessageUsers           = 149;
 const JoinGlobalRoom         = 150;
 const LeaveGlobalRoom        = 151;
 const GlobalRoomMessage      = 152;
+const RelatedSearch          = 153;
 const CantConnectToPeer      = 1001;
 
 
@@ -94,7 +115,7 @@ class UMessage
         this.in_buf = in_buf;
         code = read!uint();
 
-        debug (msg) writefln!(
+        if (log_msg) writefln!(
             "Receive <- %s (code %d) of %d bytes <- from user %s")(
             blue ~ this.name ~ norm, code, in_buf.length,
             blue ~ in_username ~ norm
@@ -123,18 +144,20 @@ class UMessage
 
         if (offset + size <= in_buf.length) {
             static if (is(T : string)) {
-                const bytes = in_buf[offset .. offset + size];
-                offset += size;
+                if (size > 0) {
+                    const bytes = in_buf[offset .. offset + size];
+                    offset += size;
 
-                if (bytes.isValid) {
-                    // UTF-8
-                    value = cast(T) bytes.idup;
-                }
-                else {
-                    // Latin-1 fallback
-                    auto wchars = new wchar[bytes.length];
-                    foreach (i, ref c; bytes) wchars[i] = cast(wchar) c;
-                    value = wchars.to!string;
+                    if (bytes.isValid) {
+                        // UTF-8
+                        value = cast(T) bytes.idup;
+                    }
+                    else {
+                        // Latin-1 fallback
+                        auto wchars = new wchar[bytes.length];
+                        foreach (i, ref c; bytes) wchars[i] = cast(wchar) c;
+                        value = wchars.to!string;
+                    }
                 }
             }
             else {
@@ -426,6 +449,18 @@ class UUserSearch : UMessage
     }
 }
 
+class USimilarRecommendations : UMessage
+{
+    string recommendation;
+
+    this(ubyte[] in_buf, string in_username) scope
+    {
+        super(in_buf, in_username);
+
+        recommendation = read!string();
+    }
+}
+
 class UAddThingILike : UMessage
 {
     string item;
@@ -586,15 +621,15 @@ class UUserPrivileged : UMessage
 
 class UGivePrivileges : UMessage
 {
-    string  username;
-    uint    days;
+    string    username;
+    Duration  duration;
 
     this(ubyte[] in_buf, string in_username) scope
     {
         super(in_buf, in_username);
 
         username = read!string();
-        days     = read!uint();
+        duration = read!uint().days;
     }
 }
 
@@ -637,6 +672,18 @@ class ULeaveGlobalRoom : UMessage
     this(ubyte[] in_buf, string in_username) scope
     {
         super(in_buf, in_username);
+    }
+}
+
+class URelatedSearch : UMessage
+{
+    string query;
+
+    this(ubyte[] in_buf, string in_username) scope
+    {
+        super(in_buf, in_username);
+
+        query = read!string();
     }
 }
 
@@ -697,19 +744,27 @@ class SMessage
 
 class SLogin : SMessage
 {
-    this(bool success, string message, uint ip_address = 0,
-         string password = null, bool supporter = false) scope
+    this(bool success, LoginRejection rejection = LoginRejection(),
+         string motd = null, uint ip_address = 0, string md5_hash = null,
+         bool supporter = false) scope
     {
         super(Login);
 
         write!bool(success);
-        write!string(message);
 
-        if (success) {
-            write!uint(ip_address);
-            write!string(password);
-            write!bool(supporter);
+        if (!success) {
+            write!string(rejection.reason);
+
+            if (rejection.detail)
+                write!string(rejection.detail);
+
+            return;
         }
+
+        write!string(motd);
+        write!uint(ip_address);
+        write!string(md5_hash);
+        write!bool(supporter);
     }
 }
 
@@ -730,9 +785,8 @@ class SGetPeerAddress : SMessage
 
 class SWatchUser : SMessage
 {
-    this(string username, bool exists, uint status, uint speed,
-         uint upload_number, uint shared_files, uint shared_folders,
-         string country_code) scope
+    this(string username, bool exists, uint status, uint upload_speed,
+         uint shared_files, uint shared_folders) scope
     {
         super(WatchUser);
 
@@ -742,12 +796,12 @@ class SWatchUser : SMessage
             return;
 
         write!uint(status);
-        write!uint(speed);
-        write!uint(upload_number);
+        write!uint(upload_speed);
+        write!uint(0);  // upload_number, obsolete
         write!uint(0);  // unknown, obsolete
         write!uint(shared_files);
         write!uint(shared_folders);
-        if (status > 0) write!string(country_code);
+        if (status > 0) write!string("");  // country_code, obsolete
     }
 }
 
@@ -813,8 +867,8 @@ class SJoinRoom : SMessage
         write!uint(n);
         foreach (user ; users)
         {
-            write!uint(user.speed);
-            write!uint(user.upload_number);
+            write!uint(user.upload_speed);
+            write!uint(0);  // upload_number, obsolete
             write!uint(0);  // unknown, obsolete
             write!uint(user.shared_files);
             write!uint(user.shared_folders);
@@ -824,7 +878,7 @@ class SJoinRoom : SMessage
         foreach (user ; users) write!uint(0);  // slots_full, obsolete
 
         write!uint(n);
-        foreach (user ; users) write!string(user.country_code);
+        foreach (user ; users) write!string("");  // country_code, obsolete
     }
 }
 
@@ -841,21 +895,20 @@ class SLeaveRoom : SMessage
 class SUserJoinedRoom : SMessage
 {
     this(string room_name, string username, uint status,
-         uint speed, uint upload_number, uint shared_files,
-         uint shared_folders, string country_code) scope
+         uint upload_speed, uint shared_files, uint shared_folders) scope
     {
         super(UserJoinedRoom);
 
         write!string(room_name);
         write!string(username);
         write!uint(status);
-        write!uint(speed);
-        write!uint(upload_number);
-        write!uint(0);  // unknown, obsolete
+        write!uint(upload_speed);
+        write!uint(0);     // upload_number, obsolete
+        write!uint(0);     // unknown, obsolete
         write!uint(shared_files);
         write!uint(shared_folders);
-        write!uint(0);  // slots_full, obsolete
-        write!string(country_code);
+        write!uint(0);     // slots_full, obsolete
+        write!string("");  // country_code, obsolete
     }
 }
 
@@ -891,13 +944,16 @@ class SConnectToPeer : SMessage
 
 class SMessageUser : SMessage
 {
-    this(uint id, uint timestamp, string username, string message,
+    this(uint id, SysTime timestamp, string username, string message,
          bool new_message) scope
     {
         super(MessageUser);
 
         write!uint(id);
-        write!uint(timestamp);
+        write!uint(cast(uint) timestamp
+            .toUnixTime
+            .clamp(0, uint.max)
+        );
         write!string(username);
         write!string(message);
         write!bool(new_message);
@@ -918,14 +974,14 @@ class SFileSearch : SMessage
 
 class SGetUserStats : SMessage
 {
-    this(string username, uint speed, uint upload_number, uint shared_files,
+    this(string username, uint upload_speed, uint shared_files,
          uint shared_folders) scope
     {
         super(GetUserStats);
 
         write!string(username);
-        write!uint(speed);
-        write!uint(upload_number);
+        write!uint(upload_speed);
+        write!uint(0);  // upload_number, obsolete
         write!uint(0);  // unknown, obsolete
         write!uint(shared_files);
         write!uint(shared_folders);
@@ -986,15 +1042,16 @@ class SRelogged : SMessage
     }
 }
 
-class SUserSearch : SMessage
+class SSimilarRecommendations : SMessage
 {
-    this(string username, uint token, string query) scope
+    this(string recommendation, string[] recommendations) scope
     {
-        super(UserSearch);
+        super(SimilarRecommendations);
 
-        write!string(username);
-        write!uint(token);
-        write!string(query);
+        write!string(recommendation);
+        write!uint(cast(uint) recommendations.length);
+        foreach (srecommendation ; recommendations)
+            write!string(srecommendation);
     }
 }
 
@@ -1008,23 +1065,41 @@ class SAdminMessage : SMessage
     }
 }
 
+class SPrivilegedUsers : SMessage
+{
+    this(string[] users) scope
+    {
+        super(PrivilegedUsers);
+
+        write!uint(cast(uint) users.length);
+        foreach (username ; users)
+            write!string(username);
+    }
+}
+
 class SCheckPrivileges : SMessage
 {
-    this(uint seconds) scope
+    this(Duration duration) scope
     {
         super(CheckPrivileges);
 
-        write!uint(seconds);
+        write!uint(cast(uint) duration
+            .total!"seconds"
+            .clamp(0, uint.max)
+        );
     }
 }
 
 class SWishlistInterval : SMessage
 {
-    this(uint interval) scope
+    this(Duration interval) scope
     {
         super(WishlistInterval);
 
-        write!uint(interval);
+        write!uint(cast(uint) interval
+            .total!"seconds"
+            .clamp(0, uint.max)
+        );
     }
 }
 
@@ -1080,7 +1155,7 @@ class SRoomTicker : SMessage
 
         write!string(room_name);
         write!uint(cast(uint) tickers.length);
-        foreach (ticker ; tickers.sort)
+        foreach (ticker ; tickers)
         {
             write!string(ticker.username);
             write!string(ticker.content);
@@ -1108,18 +1183,6 @@ class SRoomTickerRemove : SMessage
 
         write!string(room_name);
         write!string(username);
-    }
-}
-
-class SRoomSearch : SMessage
-{
-    this(string username, uint token, string query) scope
-    {
-        super(RoomSearch);
-
-        write!string(username);
-        write!uint(token);
-        write!string(query);
     }
 }
 
@@ -1153,6 +1216,22 @@ class SGlobalRoomMessage : SMessage
         write!string(room_name);
         write!string(username);
         write!string(message);
+    }
+}
+
+class SRelatedSearch : SMessage
+{
+    this(string query, uint[string] terms) scope
+    {
+        super(RelatedSearch);
+
+        write!string(query);
+        write!uint(cast(uint) terms.length);
+        foreach (term, score ; terms)
+        {
+            write!string(term);
+            write!uint(score);
+        }
     }
 }
 

@@ -7,11 +7,13 @@ module soulfind.db;
 @safe:
 
 import core.time : days, Duration;
-import soulfind.defines : blue, default_max_users, default_port, norm;
+import soulfind.defines : blue, default_max_users, default_port, log_db,
+                          log_user, norm;
 import std.array : Appender;
 import std.conv : ConvException, to;
 import std.datetime : Clock, SysTime;
-import std.file : exists, isFile;
+import std.digest : digest, LetterCase, secureEqual, toHexString;
+import std.digest.md : MD5;
 import std.stdio : writefln, writeln;
 import std.string : format, fromStringz, join, replace, toStringz;
 
@@ -70,8 +72,7 @@ struct SdbUserStats
 {
     string  username;
     bool    exists;
-    uint    speed;
-    uint    upload_number;
+    uint    upload_speed;
     uint    shared_files;
     uint    shared_folders;
 
@@ -97,7 +98,7 @@ class Sdb
 
     this(string filename)
     {
-        debug(db) writefln!("DB: Using database: %s")(filename);
+        if (log_db) writefln!("DB: Using database: %s")(filename);
 
         // Soulfind is single-threaded. Disable SQLite mutexes for a slight
         // performance improvement.
@@ -112,16 +113,13 @@ class Sdb
         db_config(db, SQLITE_DBCONFIG_ENABLE_VIEW, 0);
         db_config(db, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0);
 
-        if (!exists(filename) || !isFile(filename))
-            throw new SdbException(
-                format!("Cannot create database file %s")(filename));
+        query("PRAGMA secure_delete = ON;");
 
         const users_sql = format!(
             "CREATE TABLE IF NOT EXISTS %s("
           ~ " username TEXT PRIMARY KEY,"
           ~ " password TEXT,"
           ~ " speed INTEGER,"
-          ~ " ulnum INTEGER,"
           ~ " files INTEGER,"
           ~ " folders INTEGER,"
           ~ " banned INTEGER,"
@@ -139,7 +137,7 @@ class Sdb
         );
 
         foreach (problem ; query("PRAGMA integrity_check;"))
-            debug(db) writefln!("DB: Check [%s]")(problem[0]);
+            if (log_db) writefln!("DB: Check [%s]")(problem[0]);
 
         query("PRAGMA optimize=0x10002;");  // =all tables
         query(users_sql);
@@ -149,7 +147,7 @@ class Sdb
 
     ~this()
     {
-        debug(db) writeln("DB: Shutting down...");
+        if (log_db) writeln("DB: Shutting down...");
         close();
         shutdown();
     }
@@ -178,7 +176,7 @@ class Sdb
         );
         query(sql, [option, value]);
 
-        debug(db) writefln!("DB: Initialized config value %s to %s")(
+        if (log_db) writefln!("DB: Initialized config value %s to %s")(
             option, value
         );
     }
@@ -191,7 +189,7 @@ class Sdb
         );
         query(sql, [option, value.to!string]);
 
-        debug(db) writefln!("DB: Initialized config value %s to %d")(
+        if (log_db) writefln!("DB: Initialized config value %s to %d")(
             option, value
         );
     }
@@ -204,7 +202,7 @@ class Sdb
         );
         query(sql, [option, value]);
 
-        debug(db) writefln!("DB: Updated config value %s to %s")(
+        if (log_db) writefln!("DB: Updated config value %s to %s")(
             option, value
         );
     }
@@ -217,7 +215,7 @@ class Sdb
         );
         query(sql, [option, value.to!string]);
 
-        debug(db) writefln!("DB: Updated config value %s to %d")(
+        if (log_db) writefln!("DB: Updated config value %s to %d")(
             option, value
         );
     }
@@ -238,7 +236,7 @@ class Sdb
         );
         query(sql, [username, level.to!string]);
 
-        debug(user) writefln!("Added new admin %s")(blue ~ username ~ norm);
+        if (log_user) writefln!("Added new admin %s")(blue ~ username ~ norm);
     }
 
     void del_admin(string username)
@@ -248,7 +246,7 @@ class Sdb
         );
         query(sql, [username]);
 
-        debug(user) writefln!("Removed admin %s")(blue ~ username ~ norm);
+        if (log_user) writefln!("Removed admin %s")(blue ~ username ~ norm);
     }
 
     string[] admins()
@@ -270,16 +268,23 @@ class Sdb
         return query(sql, [username]).length > 0;
     }
 
+    private string hash_password(string password)
+    {
+        return digest!MD5(password).toHexString!(LetterCase.lower).to!string;
+    }
+
     void add_user(string username, string password)
     {
         const sql = format!(
             "INSERT INTO %s(username, password) VALUES(?, ?);")(
             users_table
         );
-        query(sql, [username, password]);
+        const hash = hash_password(password);
+
+        query(sql, [username, hash]);
         query("PRAGMA optimize;");
 
-        debug(user) writefln!("Added new user %s")(blue ~ username ~ norm);
+        if (log_user) writefln!("Added new user %s")(blue ~ username ~ norm);
     }
 
     void del_user(string username)
@@ -289,7 +294,34 @@ class Sdb
         );
         query(sql, [username]);
 
-        debug(user) writefln!("Removed user %s")(blue ~ username ~ norm);
+        if (log_user) writefln!("Removed user %s")(blue ~ username ~ norm);
+    }
+
+    bool user_verify_password(string username, string password)
+    {
+        const sql = format!(
+            "SELECT password FROM %s WHERE username = ?;")(
+            users_table
+        );
+        const stored_hash = query(sql, [username])[0][0];
+        const current_hash = hash_password(password);
+
+        return secureEqual(current_hash, stored_hash);
+    }
+
+    void user_update_password(string username, string password)
+    {
+        const sql = format!(
+            "UPDATE %s SET password = ? WHERE username = ?;")(
+            users_table
+        );
+        const hash = hash_password(password);
+
+        query(sql, [hash, username]);
+
+        if (log_user) writefln!("Set user %s's password")(
+            blue ~ username ~ norm
+        );
     }
 
     bool user_exists(string username)
@@ -315,7 +347,7 @@ class Sdb
 
         query(sql, [privileged_until.to!string, username]);
 
-        debug (user) writefln!(
+        if (log_user) writefln!(
             "Added %s of privileges to user %s")(
             duration.total!"days".days, blue ~ username ~ norm,
         );
@@ -341,7 +373,7 @@ class Sdb
 
         query(sql, [privileged_until.to!string, username]);
 
-        debug (user) {
+        if (log_user) {
             if (duration == Duration.max)
                 writefln!(
                     "Removed all privileges from user %s")(
@@ -406,7 +438,7 @@ class Sdb
 
         query(sql, [banned_until.to!string, username]);
 
-        debug(user) writefln!("Banned user %s")(blue ~ username ~ norm);
+        if (log_user) writefln!("Banned user %s")(blue ~ username ~ norm);
     }
 
     void unban_user(string username)
@@ -418,7 +450,7 @@ class Sdb
         const banned_until = 0;
         query(sql, [banned_until.to!string, username]);
 
-        debug(user) writefln!("Unbanned user %s")(blue ~ username ~ norm);
+        if (log_user) writefln!("Unbanned user %s")(blue ~ username ~ norm);
     }
 
     bool user_banned(string username)
@@ -446,32 +478,10 @@ class Sdb
         return SysTime.fromUnixTime(banned_until);
     }
 
-    string get_user_password(string username)
-    {
-        const sql = format!(
-            "SELECT password FROM %s WHERE username = ?;")(
-            users_table
-        );
-        return query(sql, [username])[0][0];
-    }
-
-    void set_user_password(string username, string password)
-    {
-        const sql = format!(
-            "UPDATE %s SET password = ? WHERE username = ?;")(
-            users_table
-        );
-        query(sql, [password, username]);
-
-        debug(user) writefln!("Set user %s's password")(
-            blue ~ username ~ norm
-        );
-    }
-
     SdbUserStats user_stats(string username)
     {
         const sql = format!(
-            "SELECT speed,ulnum,files,folders"
+            "SELECT speed,files,folders"
           ~ " FROM %s"
           ~ " WHERE username = ?;")(
             users_table
@@ -483,16 +493,13 @@ class Sdb
             const record                   = res[0];
             user_stats.exists              = true;
 
-            try user_stats.speed           = record[0].to!uint;
+            try user_stats.upload_speed    = record[0].to!uint;
             catch (ConvException) {}
 
-            try user_stats.upload_number   = record[1].to!uint;
+            try user_stats.shared_files    = record[1].to!uint;
             catch (ConvException) {}
 
-            try user_stats.shared_files    = record[2].to!uint;
-            catch (ConvException) {}
-
-            try user_stats.shared_folders  = record[3].to!uint;
+            try user_stats.shared_folders  = record[2].to!uint;
             catch (ConvException) {}
         }
         return user_stats;
@@ -505,7 +512,7 @@ class Sdb
 
         if (stats.updating_speed) {
             fields ~= "speed = ?";
-            parameters ~= stats.speed.to!string;
+            parameters ~= stats.upload_speed.to!string;
         }
 
         if (stats.updating_shared) {
@@ -524,7 +531,7 @@ class Sdb
             users_table, fields.join(", ")
         );
 
-        debug(user) {
+        if (log_user) {
             string updated;
             foreach (i, field; fields)
             {

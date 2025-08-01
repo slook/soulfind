@@ -17,8 +17,8 @@ import std.datetime : Clock, SysTime;
 import std.digest : digest, LetterCase, toHexString;
 import std.digest.md : MD5;
 import std.stdio : readln, StdioException, write, writefln, writeln;
-import std.string : chomp, format, strip;
-import std.system : endian, os;
+import std.string : chomp, format, strip, toLower;
+import std.system : os;
 
 struct MenuItem
 {
@@ -37,9 +37,10 @@ class Setup
         this.db  = new Sdb(db_filename);
     }
 
-    void show()
+    int show()
     {
         try main_menu(); catch (StdioException) {}
+        return 0;
     }
 
     @trusted
@@ -58,6 +59,11 @@ class Setup
 
             write("\nYour choice : ");
             const choice = input.strip;
+
+            if (!choice) {
+                writeln("\nNo terminal input available, exiting...");
+                return;
+            }
 
             foreach (item; items)
                 if (choice == item.index) {
@@ -82,7 +88,6 @@ class Setup
                 MenuItem("2", "Max users allowed", &max_users),
                 MenuItem("3", "MOTD",              &motd),
                 MenuItem("4", "Registered users",  &registered_users),
-                MenuItem("5", "Banned users",      &banned_users),
                 MenuItem("i", "Server info",       &server_info),
                 MenuItem("q", "Exit",              &exit)
             ]
@@ -107,7 +112,26 @@ class Setup
     private void add_admin()
     {
         write("Admin to add : ");
-        db.add_admin(input.strip);
+
+        const username = input.strip;
+        if (!db.user_exists(username)) {
+            do {
+                writefln(
+                    "User %s is not registered. Do you really want to add "
+                  ~ "them to the admin list? [y/n]", username
+                );
+                const response = input.strip.toLower;
+                if (response == "y") {
+                    db.add_admin(username);
+                    break;
+                } else if (response == "n") {
+                    break;
+                }
+            }
+            while(true);
+        } else {
+            db.add_admin(username);
+        }
         admins();
     }
 
@@ -130,7 +154,11 @@ class Setup
 
         Appender!string output;
         output ~= format!("\nAdmins (%d)...")(names.length);
-        foreach (name ; names) output ~= format!("\n\t%s")(name);
+        foreach (name ; names)
+            output ~= format!(
+                "\n\t%s (registered: %s)")(
+                name, db.user_exists(name) ? "true" : "false"
+            );
 
         writeln(output[]);
         admins();
@@ -255,14 +283,12 @@ class Setup
             format!(
                 "Soulfind %s"
               ~ "\n\tOS: %s"
-              ~ "\n\tEndianness: %s"
               ~ "\n\tCompiled with %s %s.%s on %s"
               ~ "\n\nStats:"
               ~ "\n\t%d registered users"
               ~ "\n\t%d privileged users"
               ~ "\n\t%d banned users")(
-                VERSION, os, endian, name, version_major, version_minor,
-                __DATE__,
+                VERSION, os, name, version_major, version_minor, __DATE__,
                 db.num_users,
                 db.num_users("privileges", Clock.currTime.toUnixTime),
                 db.num_users("banned", Clock.currTime.toUnixTime)
@@ -282,9 +308,11 @@ class Setup
                 MenuItem("1", "Add user",              &add_user),
                 MenuItem("2", "Show user info",        &user_info),
                 MenuItem("3", "Change user password",  &change_user_password),
-                MenuItem("4", "Remove user",           &remove_user),
-                MenuItem("5", "List registered users", &list_registered),
-                MenuItem("6", "List privileged users", &list_privileged),
+                MenuItem("4", "Unban user",            &unban_user),
+                MenuItem("5", "Remove user",           &remove_user),
+                MenuItem("6", "List registered users", &list_registered),
+                MenuItem("7", "List privileged users", &list_privileged),
+                MenuItem("8", "List banned users",     &list_banned),
                 MenuItem("q", "Return",                &main_menu)
             ]
         );
@@ -292,8 +320,15 @@ class Setup
 
     private void add_user()
     {
-        write("Username : ");
-        const username = input.strip;
+        string username;
+        do {
+            write("Username : ");
+            username = input.strip;
+            if (username.length > 0)
+                break;
+            writeln("Please enter a username");
+        }
+        while(true);
 
         if (db.user_exists(username)) {
             writefln!("\nUser %s is already registered")(username);
@@ -301,8 +336,15 @@ class Setup
             return;
         }
 
-        write("Password : ");
-        const password = input.strip;
+        string password;
+        do {
+            write("Password : ");
+            password = input.chomp;
+            if (password.length > 0)
+                break;
+            writeln("Please enter a password");
+        }
+        while(true);
 
         db.add_user(username, password);
         registered_users();
@@ -340,8 +382,7 @@ class Setup
               ~ "\n\tsupporter: %s"
               ~ "\n\tfiles: %s"
               ~ "\n\tdirs: %s"
-              ~ "\n\tupload speed: %s"
-              ~ "\n\tupload number: %s")(
+              ~ "\n\tupload speed: %s")(
                 username,
                 admin,
                 banned,
@@ -349,8 +390,7 @@ class Setup
                 supporter,
                 stats.shared_files,
                 stats.shared_folders,
-                stats.speed,
-                stats.upload_number
+                stats.upload_speed
             );
         }
         else
@@ -365,15 +405,33 @@ class Setup
         const username = input.strip;
 
         if (db.user_exists(username)) {
-            write("Enter new password : ");
-            const password = digest!MD5(input)
-                .toHexString!(LetterCase.lower)
-                .to!string;
+            string password;
+            do {
+                write("Enter new password : ");
+                password = input.chomp;
+                if (password.length > 0)
+                    break;
+                writeln("Please enter a password");
+            }
+            while(true);
 
-            db.set_user_password(username, password);
+            db.user_update_password(username, password);
         }
         else
             writefln!("\nUser %s is not registered")(username);
+
+        registered_users();
+    }
+
+    private void unban_user()
+    {
+        write("User to unban : ");
+        const username = input.strip;
+
+        if (db.user_banned(username))
+            db.unban_user(username);
+        else
+            writefln!("\nUser %s is not banned")(username);
 
         registered_users();
     }
@@ -420,79 +478,6 @@ class Setup
         registered_users();
     }
 
-    private void banned_users()
-    {
-        show_menu(
-            format!("Banned users (%d)")(
-                db.num_users("banned", Clock.currTime.toUnixTime)
-            ),
-            [
-                MenuItem("1", "Ban user",          &ban_user),
-                MenuItem("2", "Unban user",        &unban_user),
-                MenuItem("3", "List banned users", &list_banned),
-                MenuItem("q", "Return",            &main_menu)
-            ]
-        );
-    }
-
-    private void ban_user()
-    {
-        write("User to ban : ");
-        const username = input.strip;
-
-        if (!db.user_exists(username)) {
-            writefln!("\nUser %s is not registered")(username);
-            banned_users();
-            return;
-        }
-
-        Duration banned_until;
-
-        do {
-            write("Number of days to ban user (empty = forever) : ");
-            const duration = input.strip;
-
-            if (duration.length == 0) {
-                banned_until = Duration.max;
-                break;
-            }
-
-            try {
-                banned_until = duration.to!uint.days;
-                break;
-            }
-            catch (ConvException) {
-                writeln("Please enter a valid number");
-            }
-        }
-        while(true);
-
-        db.ban_user(username, banned_until);
-
-        if (banned_until == Duration.max)
-            writefln!("\nBanned user %s forever")(username);
-        else
-            writefln!(
-                "\nBanned user %s until %s")(
-                username, banned_until
-            );
-
-        banned_users();
-    }
-
-    private void unban_user()
-    {
-        write("User to unban : ");
-        const username = input.strip;
-
-        if (db.user_banned(username))
-            db.unban_user(username);
-        else
-            writefln!("\nUser %s is not banned")(username);
-
-        banned_users();
-    }
-
     private void list_banned()
     {
         const users = db.usernames("banned", Clock.currTime.toUnixTime);
@@ -509,6 +494,6 @@ class Setup
         }
 
         writeln(output[]);
-        banned_users();
+        registered_users();
     }
 }

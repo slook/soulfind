@@ -39,12 +39,6 @@ To compile Soulfind, run:
 dub build
 ```
 
-To compile Soulfind with debug logging enabled:
-
-```sh
-dub build --debug=db --debug=msg --debug=user
-```
-
 To compile a static binary on supported systems (mainly musl-based Linux
 distributions), run:
 
@@ -71,15 +65,11 @@ DC=gdc dub build
 
 ## Configuration
 
-Soulfind stores all its configuration in a SQLite database. When starting, it
-will look for the file `soulfind.db`, and create it with the following tables
-if it doesn't exist:
+Soulfind stores all its configuration in a SQLite database. On startup,
+Soulfind will look for the file `soulfind.db` by default, unless provided a
+different path with the `--database` flag.
 
- - users
- - admins
- - config
-
-Only the `config` table is filled with some default values:
+The default config values are:
 
  - port: `2242`
  - max_users: `65535`
@@ -89,12 +79,51 @@ Server owners can configure the server and add admins with the `soulsetup`
 utility.
 
 Admins can interact with the server by sending commands in a private
-chat with the server user (`help` to see all commands).
+chat with the `server` user (`help` to see all commands).
+
+> [!IMPORTANT]
+> If an owner adds a username to the admin list before the user has registered
+a password, it is no longer possible to register through the Soulseek client.
+Only an owner can register the user in the `Registered users` section in the
+`soulsetup` utility.
+
+
+## Runtime Options
+
+### Database File
+
+Use a different path for the database file by providing a `-d` or `--database`
+argument:
+
+```
+soulfind -d path/to/database.db
+```
+
+```
+soulsetup -d path/to/database.db
+```
+
+### Listening Port
+
+Always enforce a specific listening port by providing a `-p` or `--port`
+argument:
+
+```
+soulfind -p 1234
+```
+
+### Debug Logging
+
+Enable detailed debug logging by providing the `--debug` flag:
+
+```
+soulfind --debug
+```
 
 
 ## Missing Features
 
- - Anti-spam measures
+ - Rate limits
  - Private rooms
  - Distributed search network
 

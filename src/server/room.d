@@ -10,7 +10,8 @@ import soulfind.defines : max_chat_message_length, max_room_ticker_length,
                           max_room_tickers;
 import soulfind.server.messages;
 import soulfind.server.user : User;
-import std.array : array;
+import std.algorithm : sort;
+import std.array : Appender, array;
 import std.datetime : Clock, SysTime;
 
 struct Ticker
@@ -50,11 +51,11 @@ class Room
         users[user.username] = user;
 
         scope joined_room_msg = new SUserJoinedRoom(
-            name, user.username, user.status, user.speed, user.upload_number,
-            user.shared_files, user.shared_folders, user.country_code
+            name, user.username, user.status, user.upload_speed,
+            user.shared_files, user.shared_folders
         );
         scope join_room_msg = new SJoinRoom(name, users);
-        scope tickers_msg = new SRoomTicker(name, tickers.byValue.array);
+        scope tickers_msg = new SRoomTicker(name, tickers_by_order);
 
         send_to_all(joined_room_msg);
         user.send_message(join_room_msg);
@@ -75,6 +76,13 @@ class Room
     bool is_joined(string username)
     {
         return (username in users) ? true : false;
+    }
+
+    string[] usernames()
+    {
+        Appender!(string[]) usernames;
+        foreach (user ; users) usernames ~= user.username;
+        return usernames[];
     }
 
     ulong num_users()
@@ -134,7 +142,7 @@ class Room
         send_to_all(msg);
     }
 
-    private void del_ticker(string username)
+    void del_ticker(string username)
     {
         if (username !in tickers)
             return;
@@ -152,6 +160,11 @@ class Room
             if (ticker.time < found_ticker.time) found_ticker = ticker;
         }
         del_ticker(found_ticker.username);
+    }
+
+    Ticker[] tickers_by_order()
+    {
+        return tickers.byValue.array.sort.array;
     }
 
     ulong num_tickers()
@@ -175,6 +188,11 @@ class GlobalRoom
     {
         if (username in users)
              users.remove(username);
+    }
+
+    bool is_joined(string username)
+    {
+        return (username in users) ? true : false;
     }
 
     void say(string room_name, string username, string message)
