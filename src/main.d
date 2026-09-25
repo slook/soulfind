@@ -13,7 +13,7 @@ shared bool running = true;
 private void increase_fd_limit()
 {
     // Increase file descriptor limit for concurrent connections
-    version (Posix) {
+    version (Posix) version (Have_soulfind_server) {
         import core.sys.posix.sys.resource : getrlimit, rlimit, RLIMIT_NOFILE,
                                              setrlimit;
         rlimit rlim;
