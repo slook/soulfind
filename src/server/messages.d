@@ -1362,15 +1362,13 @@ final class SMessageUser : SMessage
 
 final class SFileSearch : SMessage
 {
-    User  receiving_user;
     Room  receiving_room;
 
-    this(string username, uint token, string query, User receiving_user = null,
+    this(string username, uint token, string query, 
          Room receiving_room = null) scope
     {
         super(FileSearch);
 
-        this.receiving_user = receiving_user;
         this.receiving_room = receiving_room;
 
         write!string(username);
