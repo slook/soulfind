@@ -7,7 +7,6 @@ module soulfind.server.messages;
 @safe:
 
 import soulfind.defines : blue, log_msg, norm, RoomTicker;
-import soulfind.server.room : Room;
 import soulfind.server.user : User;
 import std.array : Appender;
 import std.bitmanip : Endian, nativeToLittleEndian, peek;
@@ -1362,14 +1361,9 @@ final class SMessageUser : SMessage
 
 final class SFileSearch : SMessage
 {
-    Room  receiving_room;
-
-    this(string username, uint token, string query, 
-         Room receiving_room = null) scope
+    this(string username, uint token, string query) scope
     {
         super(FileSearch);
-
-        this.receiving_room = receiving_room;
 
         write!string(username);
         write!uint(token);

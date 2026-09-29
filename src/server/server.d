@@ -26,6 +26,12 @@ import std.datetime : Clock, ClockType, MonoTime, msecs, SysTime, UTC;
 import std.random : unpredictableSeed;
 import std.stdio : writeln;
 
+private struct QueuedSearch
+{
+    SFileSearch  msg;
+    void delegate(scope SMessage, bool[string]) multicaster;  // send_to_all
+}
+
 final class Server
 {
     const SysTime                      started_at;
@@ -40,7 +46,8 @@ final class Server
     private User[string]               users;
     private PM[uint]                   pms;
     private Room[string]               rooms;
-    private Appender!(SFileSearch[])   queued_searches;
+
+    private Appender!(QueuedSearch[])  queued_searches;
     private string[]                   search_filters;
     private bool[string]               unsearchable_users;
 
@@ -80,8 +87,8 @@ final class Server
         if (db.is_search_query_filtered(query))
             return;
 
-        // Batch outgoing messages to reduce bandwidth overhead of TCP packets
-        queued_searches ~= new SFileSearch(username, token, query);
+        auto msg = new SFileSearch(username, token, query);
+        queued_searches ~= QueuedSearch(msg, &send_to_all);
     }
 
     void search_user_files(uint token, string query, string from_username,
@@ -120,22 +127,19 @@ final class Server
         if (db.is_search_query_filtered(query))
             return;
 
-        // Batch outgoing messages to reduce bandwidth overhead of TCP packets
-        queued_searches ~= new SFileSearch(username, token, query, room);
+        auto msg = new SFileSearch(username, token, query);
+        queued_searches ~= QueuedSearch(msg, &room.send_to_all);
     }
 
     void send_queued_searches(MonoTime current_time)
     {
+        // Batch outgoing messages to reduce bandwidth overhead of TCP packets
         if ((current_time - last_search_dist) < search_dist_interval)
             return;
 
-        foreach (ref msg ; queued_searches) {
-            if (msg.receiving_room !is null) {
-                msg.receiving_room.send_to_all(msg, unsearchable_users);
-                continue;
-            }
-            send_to_all(msg, unsearchable_users);
-        }
+        foreach (ref search ; queued_searches)
+            search.multicaster(search.msg, unsearchable_users);  // send_to_all
+
         queued_searches.clear();
         last_search_dist = current_time;
     }
@@ -839,6 +843,9 @@ final class Server
     {
         return users.length;
     }
+
+
+    // Multicaster
 
     void send_to_all(scope SMessage msg, bool[string] excluded_users = null)
     {

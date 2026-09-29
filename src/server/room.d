@@ -97,6 +97,9 @@ final class Room
         return users.length;
     }
 
+
+    // Multicaster
+
     void send_to_all(scope SMessage msg, bool[string] excluded_users = null)
     {
         if (log_msg) writeln(
