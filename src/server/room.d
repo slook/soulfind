@@ -50,14 +50,19 @@ final class Room
         users[user.username] = user;
 
         scope joined_room_msg = new SUserJoinedRoom(
-            name, user.username, user.status, user.upload_speed,
-            user.upload_slots_full, user.num_files, user.num_folders
+            name, UserData(user.username, user.status, user.stats)
         );
+
+        UserData[] users_data;
+        foreach (username, u ; users)
+            users_data ~= UserData(username, u.status, u.stats);
+
         scope join_room_msg = new SJoinRoom(
-            name, users,
+            name, users_data,
             db.get_room_owner(name),
             db.room_members!(RoomMemberType.operator)(name)
         );
+
         scope tickers_msg = new SRoomTickers(name, tickers);
 
         send_to_all(joined_room_msg);

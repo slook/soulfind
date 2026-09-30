@@ -6,7 +6,7 @@
 module soulfind.server.messages;
 @safe:
 
-import soulfind.defines : blue, log_msg, norm, RoomTicker;
+import soulfind.defines : blue, log_msg, norm, RoomTicker, UserStats;
 import soulfind.server.room : Room;
 import soulfind.server.user : User;
 import std.array : Appender;
@@ -66,6 +66,13 @@ struct RoomInfo
 {
     string  room_name;
     uint    num_users;
+}
+
+struct UserData
+{
+    string      username;
+    UserStatus  status;
+    UserStats   stats;
 }
 
 struct Recommendation
@@ -1156,23 +1163,22 @@ final class SGetPeerAddress : SMessage
 
 final class SWatchUser : SMessage
 {
-    this(string username, bool exists, uint status, uint upload_speed,
-         uint num_files, uint num_folders) scope
+    this(UserData user_data) scope
     {
         super(WatchUser);
 
-        write!string(username);
-        write!bool(exists);
-        if (!exists)
+        write!string(user_data.username);
+        write!bool(user_data.stats.exists);
+        if (!user_data.stats.exists)
             return;
 
-        write!uint(status);
-        write!uint(upload_speed);
+        write!uint(user_data.status);
+        write!uint(user_data.stats.upload_speed);
         write!uint(0);  // upload_number, obsolete
         write!uint(0);  // unknown, obsolete
-        write!uint(num_files);
-        write!uint(num_folders);
-        if (status > 0) write!string("");  // country_code, obsolete
+        write!uint(user_data.stats.num_files);
+        write!uint(user_data.stats.num_folders);
+        if (user_data.status > 0) write!string("");  // country_code, obsolete
     }
 }
 
@@ -1241,7 +1247,7 @@ final class SRoomList : SMessage
 
 final class SJoinRoom : SMessage
 {
-    this(string room_name, User[string] users, string owner = null,
+    this(string room_name, UserData[] users, string owner = null,
          string[] operators = null) scope
     {
         super(JoinRoom);
@@ -1250,7 +1256,7 @@ final class SJoinRoom : SMessage
         const n = cast(uint) users.length;
 
         write!uint(n);
-        foreach (ref username, ref _user ; users) write!string(username);
+        foreach (ref user ; users) write!string(user.username);
 
         write!uint(n);
         foreach (ref user ; users) write!uint(user.status);
@@ -1258,15 +1264,15 @@ final class SJoinRoom : SMessage
         write!uint(n);
         foreach (ref user ; users)
         {
-            write!uint(user.upload_speed);
+            write!uint(user.stats.upload_speed);
             write!uint(0);  // upload_number, obsolete
             write!uint(0);  // unknown, obsolete
-            write!uint(user.num_files);
-            write!uint(user.num_folders);
+            write!uint(user.stats.num_files);
+            write!uint(user.stats.num_folders);
         }
 
         write!uint(n);
-        foreach (ref user ; users) write!uint(user.upload_slots_full);
+        foreach (ref user ; users) write!uint(user.stats.upload_slots_full);
 
         write!uint(n);
         foreach (ref user ; users) write!string("");  // country_code, obsolete
@@ -1293,22 +1299,20 @@ final class SLeaveRoom : SMessage
 
 final class SUserJoinedRoom : SMessage
 {
-    this(string room_name, string username, uint status,
-         uint upload_speed, uint upload_slots_full, uint num_files,
-         uint num_folders) scope
+    this(string room_name, UserData user_data) scope
     {
         super(UserJoinedRoom);
 
         write!string(room_name);
-        write!string(username);
-        write!uint(status);
-        write!uint(upload_speed);
+        write!string(user_data.username);
+        write!uint(user_data.status);
+        write!uint(user_data.stats.upload_speed);
         write!uint(0);     // upload_number, obsolete
         write!uint(0);     // unknown, obsolete
-        write!uint(num_files);
-        write!uint(num_folders);
-        write!uint(upload_slots_full);
-        write!string("");  // country_code, obsolete
+        write!uint(user_data.stats.num_files);
+        write!uint(user_data.stats.num_folders);
+        write!uint(user_data.stats.upload_slots_full);
+        write!string("");  // country_code, not implemented
     }
 }
 
@@ -1393,17 +1397,16 @@ final class SSendConnectToken : SMessage
 
 final class SGetUserStats : SMessage
 {
-    this(string username, uint upload_speed, uint num_files,
-         uint num_folders) scope
+    this(string username, UserStats stats) scope
     {
         super(GetUserStats);
 
         write!string(username);
-        write!uint(upload_speed);
+        write!uint(stats.upload_speed);
         write!uint(0);  // upload_number, obsolete
         write!uint(0);  // unknown, obsolete
-        write!uint(num_files);
-        write!uint(num_folders);
+        write!uint(stats.num_files);
+        write!uint(stats.num_folders);
     }
 }
 
