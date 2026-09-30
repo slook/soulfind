@@ -7,7 +7,7 @@ module soulfind.server.msghandler;
 @safe:
 
 import soulfind.defines : blue, bold, log_msg, norm, pbkdf2_iterations, red,
-                          RoomMemberType, RoomType, server_username;
+                          RoomMemberType, RoomType, server_username, UserStats;
 import soulfind.pwhash : create_salt, hash_password_async;
 import soulfind.server.conns : Logging;
 import soulfind.server.messages;
@@ -93,41 +93,26 @@ final class MessageHandler
             if (!msg.is_valid)
                 break;
 
-            auto target_user = server.get_user(msg.username);
+            auto target_user  = server.get_user(msg.username);
+            auto user_data    = UserData(msg.username);
 
-            bool user_exists;
-            uint user_status = UserStatus.offline;
-            uint user_upload_speed;
-            uint user_shared_files, user_shared_folders;
-
-            if (target_user !is null)
-            {
-                user_exists = true;
-                user_status = target_user.status;
-                user_upload_speed = target_user.upload_speed;
-                user_shared_files = target_user.shared_files;
-                user_shared_folders = target_user.shared_folders;
+            if (target_user !is null) {
+                user_data.status  = target_user.status;
+                user_data.stats   = target_user.stats;
             }
             else if (msg.username == server_username) {
                 // Allow clients that check user existence to add the
                 // 'server' user to the user list, otherwise some of them
                 // have no way of opening a private chat tab.
-                user_exists = true;
+                user_data.stats.exists = true;
             }
             else {
-                const user_stats = server.db.user_stats(msg.username);
-                user_exists = user_stats.exists;
-                user_upload_speed = user_stats.upload_speed;
-                user_shared_files = user_stats.shared_files;
-                user_shared_folders = user_stats.shared_folders;
+                user_data.stats = server.db.user_stats(msg.username);
             }
 
-            if (user_exists) user.watch(msg.username);
+            if (user_data.stats.exists) user.watch(msg.username);
 
-            scope response_msg = new SWatchUser(
-                msg.username, user_exists, user_status, user_upload_speed,
-                user_shared_files, user_shared_folders
-            );
+            scope response_msg = new SWatchUser(user_data);
             user.send_message(response_msg);
             break;
 
@@ -278,12 +263,6 @@ final class MessageHandler
                 break;
 
             user.update_shared_stats(msg.shared_files, msg.shared_folders);
-
-            scope response_msg = new SGetUserStats(
-                user.username, user.upload_speed, user.shared_files,
-                user.shared_folders
-            );
-            server.send_to_watching(user.username, response_msg);
             break;
 
         case GetUserStats:
@@ -292,26 +271,16 @@ final class MessageHandler
                 break;
 
             auto target_user = server.get_user(msg.username);
-
-            uint user_upload_speed;
-            uint user_shared_files, user_shared_folders;
+            auto user_stats = UserStats();
 
             if (target_user !is null) {
-                user_upload_speed = target_user.upload_speed;
-                user_shared_files = target_user.shared_files;
-                user_shared_folders = target_user.shared_folders;
+                user_stats = target_user.stats;
             }
             else if (msg.username != server_username) {
-                const user_stats = server.db.user_stats(msg.username);
-                user_upload_speed = user_stats.upload_speed;
-                user_shared_files = user_stats.shared_files;
-                user_shared_folders = user_stats.shared_folders;
+                user_stats = server.db.user_stats(msg.username);
             }
 
-            scope response_msg = new SGetUserStats(
-                msg.username, user_upload_speed, user_shared_files,
-                user_shared_folders
-            );
+            scope response_msg = new SGetUserStats(msg.username, user_stats);
             user.send_message(response_msg);
             break;
 
@@ -320,7 +289,7 @@ final class MessageHandler
             if (!msg.is_valid)
                 break;
 
-            user.upload_slots_full = msg.slots_full;
+            user.stats.upload_slots_full = msg.slots_full;
 
             scope response_msg = new SUploadSlotsFull(
                 user.username, msg.slots_full

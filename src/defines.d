@@ -79,9 +79,10 @@ struct RoomTicker
 struct UserStats
 {
     bool  exists;
-    uint  upload_speed;
+    uint  upload_speed;       // in B/s
     uint  shared_files;
     uint  shared_folders;
+    uint  upload_slots_full;  // unused in clients
 
     bool  updating_speed;
     bool  updating_shared;

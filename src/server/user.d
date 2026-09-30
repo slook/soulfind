@@ -43,10 +43,7 @@ final class User
     bool                    hashing_password;
     bool                    authenticated;
 
-    uint                    upload_speed;       // in B/s
-    uint                    upload_slots_full;  // unused in clients
-    uint                    shared_files;
-    uint                    shared_folders;
+    UserStats               stats;
     SysTime                 privileged_until;
     bool                    accept_room_invitations;
 
@@ -343,10 +340,7 @@ final class User
             user.disconnect(relogged);
         }
 
-        const user_stats = server.db.user_stats(username);
-        upload_speed = user_stats.upload_speed;
-        shared_files = user_stats.shared_files;
-        shared_folders = user_stats.shared_folders;
+        stats = server.db.user_stats(username);
 
         refresh_privileges(false);
 
@@ -420,36 +414,34 @@ final class User
 
     void update_upload_speed(uint new_speed)
     {
-        if (upload_speed > 0)
-            upload_speed = cast(uint) (
-                upload_speed * (1.0 - speed_weight) + new_speed * speed_weight
+        if (stats.upload_speed > 0)
+            stats.upload_speed = cast(uint) (
+                stats.upload_speed * (1.0 - speed_weight)
+                + new_speed        * speed_weight  // EMA
             );
         else
-            upload_speed = new_speed;
+            stats.upload_speed = new_speed;
 
-        scope msg = new SGetUserStats(
-            username, upload_speed, shared_files, shared_folders
-        );
-        server.send_to_watching(username, msg);
-
-        UserStats stats;
-        stats.upload_speed = upload_speed;
         stats.updating_speed = true;
-
-        server.db.user_update_stats(username, stats);
+        stats_updated();
     }
 
     void update_shared_stats(uint new_files, uint new_folders)
     {
-        shared_files = new_files;
-        shared_folders = new_folders;
-
-        UserStats stats;
         stats.shared_files = new_files;
         stats.shared_folders = new_folders;
         stats.updating_shared = true;
+        stats_updated();
+    }
 
+    private void stats_updated()
+    {
+        scope msg = new SGetUserStats(username, stats);
+        server.send_to_watching(username, msg);
         server.db.user_update_stats(username, stats);
+
+        stats.updating_speed = false;
+        stats.updating_shared = false;
     }
 
 

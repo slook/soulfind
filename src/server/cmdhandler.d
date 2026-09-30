@@ -559,9 +559,9 @@ final class CommandHandler
 
             privileged_until = user.privileged_until;
             if (user.supporter) supporter = "yes";
-            upload_speed = user.upload_speed;
-            shared_files = user.shared_files;
-            shared_folders = user.shared_folders;
+            upload_speed = user.stats.upload_speed;
+            shared_files = user.stats.shared_files;
+            shared_folders = user.stats.shared_folders;
 
             if (user.obfuscation_type == ObfuscationType.rotated)
                 obfuscation_type = "rotated";
@@ -804,9 +804,9 @@ final class CommandHandler
             "\n        \"privileged_until\": ", privileged, ",",
             "\n        \"supporter\": ", supporter, ",",
             "\n        \"searchable\": ", searchable, ",",
-            "\n        \"num_files\": ", user.shared_files, ",",
-            "\n        \"num_folders\": ", user.shared_folders, ",",
-            "\n        \"upload_speed\": ", user.upload_speed, ",",
+            "\n        \"num_files\": ", user.stats.shared_files, ",",
+            "\n        \"num_folders\": ", user.stats.shared_folders, ",",
+            "\n        \"upload_speed\": ", user.stats.upload_speed, ",",
             "\n        \"private_rooms_owner\": {", rooms, "}",
             "\n        \"private_rooms_member\": {", rooms(false), "}",
             "\n        \"room_tickers\": {", tickers, "}",
